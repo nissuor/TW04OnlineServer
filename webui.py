@@ -1836,9 +1836,10 @@ try them &mdash; working or not &mdash; please report what happened on
                         % (' class="me"' if e['day'] == today else '',
                            date, e['day'], esc(e['name']),
                            ('<span class="foot">Round %d of %d &middot; '
-                            'purse paid on the 72-hole total</span><br>'
+                            'purse paid on the %d-hole total</span><br>'
                             % (e['day'] - e['series'] + 1,
-                               twtourney.SERIES_DAYS)
+                               twtourney.series_days(e['series']),
+                               18 * twtourney.series_days(e['series']))
                             if e.get('series') else '')
                            + conditions_line(e.get('conditions')),
                            esc(course), conditions_cells(e.get('conditions')),
@@ -2481,12 +2482,13 @@ try them &mdash; working or not &mdash; please report what happened on
             return self.not_found('Event', 'That is not a date.', session)
         day, today = twtourney.to_day(when), twtourney.today()
         event = DB.event(day)
-        # On a round of a four-day event, the board is the running total, and
+        # On a round of a multi-day event, the board is the running total, and
         # the purse is only paid on its last day.
         board = DB.tourney_board(day, limit=1000)
         series = event.get('series') if event else None
         final = twtourney.series_last(event) if event else day
         rounds = day - series + 1 if series else 1
+        days = twtourney.series_days(series) if series else 1
         if not event and not board:
             return self.not_found('Event', 'There was no event on %s.'
                                   % when.strftime('%d %B %Y'), session)
@@ -2521,12 +2523,14 @@ try them &mdash; working or not &mdash; please report what happened on
         about = ''
         if series:
             about = ('<p class="foot" style="margin:0 0 1rem">Round %d of %d, '
-                     '%s to %s. The leaderboard is the 72-hole total of each '
-                     "player's best round a day; a missed round drops a player "
-                     'off it, and the purse is paid once, on the final total.'
-                     '</p>' % (rounds, twtourney.SERIES_DAYS,
+                     '%s to %s. One round a day: only the first a player starts '
+                     'counts. The leaderboard is the %d-hole total of those '
+                     'rounds; a missed or unfinished round drops a player off '
+                     'it, and the purse is paid once, on the final total.'
+                     '</p>' % (rounds, days,
                                twtourney.from_day(series).strftime('%d %b'),
-                               twtourney.from_day(final).strftime('%d %b')))
+                               twtourney.from_day(final).strftime('%d %b'),
+                               18 * days))
         body = ('%s<h1>%s %s</h1><p class="sub">%s &middot; %s</p>'
                 '<div class="card">%s<p style="margin:0 0 1rem">%s</p>'
                 '<div class="figures">%s</div></div>'
@@ -2538,7 +2542,7 @@ try them &mdash; working or not &mdash; please report what happened on
             # R1..R4 and the total; rounds still to come are dashes, and the
             # prize column only once the event is over.
             head = ''.join('<th class="num">R%d</th>' % n
-                           for n in range(1, twtourney.SERIES_DAYS + 1))
+                           for n in range(1, days + 1))
             rows = ''.join(
                 '<tr%s><td class="rank%s">%s</td><td>%s</td>%s'
                 '<td class="num"><strong>%d</strong></td><td class="num">%s</td>'
@@ -2548,7 +2552,7 @@ try them &mdash; working or not &mdash; please report what happened on
                    plink(r['name']),
                    ''.join('<td class="num">%s</td>' % (
                        r['by_round'][n] if n < len(r['by_round']) else '&ndash;')
-                       for n in range(twtourney.SERIES_DAYS)),
+                       for n in range(days)),
                    r['strokes'], _topar(twtourney.row_to_par(r)),
                    twtourney.money(prize(purse, r['place'], r['tied']))
                    if purse and day == final else '&ndash;')

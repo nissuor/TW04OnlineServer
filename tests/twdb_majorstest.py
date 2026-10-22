@@ -7,8 +7,9 @@ is the server adding them up, and each rule here is one a one-day event never
 needed:
 
 1. **The board is the running total.**  Each day's board is the sum of each
-   player's best round of every day so far, and a player who misses a day is
-   off it -- including on the console's daily leaderboard.
+   player's round of every day so far (the first one recorded), and a player
+   who misses a day is off it -- including on the console's daily leaderboard.
+   The weekend events and the one-round-a-day rule: tests/twdb_weekendtest.py.
 2. **It is decided once.**  Nothing is paid, and nobody wins, until the last
    day is over; then the purse is paid on the 72-hole total.
 3. **It is entered once.**  Four rounds are one event on MY RESUME and the
@@ -33,7 +34,7 @@ import twtourney
 
 # The 2026 US Major: Thursday 18 to Sunday 21 June.
 FIRST = twtourney.to_day(datetime.date(2026, 6, 18))
-LAST = FIRST + twtourney.SERIES_DAYS - 1
+LAST = FIRST + twtourney.MAJOR_DAYS - 1
 PURSE = 15000000
 
 
@@ -191,7 +192,8 @@ def lobby(db):
     check(msg.startswith('Round 3 of 4: 64 is recorded') and
           'missed round' in msg, 'carol is told she is off the board: %r' % msg)
     msg = report('alice', 75)
-    check(msg.startswith('Round 3 of 4: 75 is recorded, your best of 70 counts')
+    check(msg.startswith('Round 3 of 4: 75 is recorded, but your first round of'
+                         ' 70 counts')
           and 'Total 210' in msg and '1st of 2' in msg,
           'alice is told her total and place: %r' % msg)
 

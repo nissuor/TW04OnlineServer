@@ -157,6 +157,17 @@ CREATE TABLE IF NOT EXISTS tourney (
 );
 CREATE INDEX IF NOT EXISTS tourney_day ON tourney(day);
 
+-- Who has started a round of a multi-day event on a day.  Those events allow
+-- one round a day -- the first one started -- so a start is remembered even if
+-- its round never arrives: a quit or a crash is that day missed, not a free
+-- retry.  To give a player another go, delete their row for the day.
+CREATE TABLE IF NOT EXISTS tourney_starts (
+    persona  TEXT NOT NULL COLLATE NOCASE,
+    day      INTEGER NOT NULL,
+    started  REAL NOT NULL,
+    PRIMARY KEY (persona, day)
+);
+
 -- EVERY tournament round the server accepted, replays included.  `tourney`
 -- keeps only each player's best of the day, for the leaderboards; this is what
 -- the server's own totals (rounds, holes played, birdies...) count from, so a
@@ -883,9 +894,10 @@ class DB:
              for e in events])
 
     def place_series(self, events, from_day):
-        """Put four-day events on a calendar that was drawn before they
-        existed.  `events` are their rounds (twtourney.majors_between);
-        returns the first day of each event that was written.
+        """Put multi-day events on a calendar that was drawn before they
+        existed.  `events` are their rounds (twtourney.majors_between, or a
+        weekend's twtourney.weekend_rounds); returns the first day of each
+        event that was written.
 
         All or nothing per event, and only an event that has not started
         (its first day is `from_day` or later) and has not a single round on
@@ -898,8 +910,8 @@ class DB:
         placed = []
         now = time.time()
         for first, rounds in sorted(by.items()):
-            last = first + twtourney.SERIES_DAYS - 1
-            if first < from_day or len(rounds) != twtourney.SERIES_DAYS:
+            last = first + twtourney.series_days(first) - 1
+            if first < from_day or len(rounds) != twtourney.series_days(first):
                 continue
             stored = {e['day']: e for e in self.events(first, last - first + 1)}
             if all(stored.get(e['day'], {}).get('series') == first
@@ -958,10 +970,19 @@ class DB:
         self.run('UPDATE events SET name = ?, course = ? WHERE day = ?',
                  (name, course, day))
 
-    def add_tourney(self, persona, day, course, fields, event=''):
+    def start_round(self, persona, day):
+        """Note that `persona` started a round of a multi-day event on `day`.
+        False if they already had: that event allows one round a day."""
+        return self.run('INSERT OR IGNORE INTO tourney_starts (persona, day,'
+                        ' started) VALUES (?, ?, ?)',
+                        (persona, day, time.time())).rowcount == 1
+
+    def add_tourney(self, persona, day, course, fields, event='',
+                    first_only=False):
         """Record a tournament round.  One per player per day, and it is the
         player's BEST: a replay only replaces the stored round when it took
-        fewer strokes -- a 55 then a 58 must leave the 55.
+        fewer strokes -- a 55 then a 58 must leave the 55.  With `first_only`
+        (a round of a multi-day event) the first round recorded stands instead.
         Returns the strokes that now count for the player on that day."""
         par = twtourney.card_par(fields) or 0
         now = time.time()
@@ -975,9 +996,9 @@ class DB:
                  ' course=excluded.course, strokes=excluded.strokes,'
                  ' event=excluded.event, par=excluded.par,'
                  ' fields=excluded.fields, received=excluded.received'
-                 ' WHERE excluded.strokes < tourney.strokes',
+                 ' WHERE excluded.strokes < tourney.strokes AND NOT ?',
                  (persona, day, course, fields.get('STROKES', 0), event, par,
-                  json.dumps(fields), now))
+                  json.dumps(fields), now, bool(first_only)))
         if par:
             self.note_par(course, par)
         row = self.one('SELECT strokes FROM tourney WHERE persona = ? AND'
@@ -1078,10 +1099,10 @@ class DB:
 
     def tourney_board(self, day, limit=50):
         """The board a day is RANKED on.  For an ordinary event that is
-        tourney_day.  For a round of a four-day event it is the running total:
-        each player's best round of every day since the first, and only the
-        players who have posted all of those days -- a missed round is off the
-        board, as a missed cut would be.
+        tourney_day.  For a round of a multi-day event it is the running total:
+        each player's round of every day since the first (the one round they
+        get a day), and only the players who have posted all of those days -- a
+        missed round is off the board, as a missed cut would be.
 
         Rows are tourney_day's shape with `strokes` the total, `today` that
         day's round, `by_round` each day's, `rounds` how many, and `par` the
@@ -1154,8 +1175,8 @@ class DB:
                 if key not in entered:
                     entered.add(key)
                     e['events'] += 1
-            # ...and it is decided once, on its last day's 72-hole total.
-            if series and day != series + twtourney.SERIES_DAYS - 1:
+            # ...and it is decided once, on its last day's total.
+            if series and day != twtourney.series_last(event):
                 continue
             for row in (self.tourney_board(day, limit=1000) if series
                         else board):
@@ -1207,7 +1228,7 @@ class DB:
         # so they are skipped -- hence the wider query.
         rows = self.query('SELECT day, MIN(strokes) AS best FROM tourney'
                           ' WHERE day < ? GROUP BY day ORDER BY day DESC'
-                          ' LIMIT ?', (open_day, limit * twtourney.SERIES_DAYS))
+                          ' LIMIT ?', (open_day, limit * twtourney.MAJOR_DAYS))
         out = []
         for r in rows:
             event = self.event(r['day'])

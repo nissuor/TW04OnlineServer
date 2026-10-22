@@ -214,7 +214,7 @@ def rounds(db):
             r['place'] = 1 + sum(o['strokes'] < r['strokes'] for o in field)
             r['field'] = len(field)
     for first, players in events.items():
-        for day in range(first, first + twtourney.SERIES_DAYS):
+        for day in range(first, first + twtourney.series_days(first)):
             board = [(sum(mine[d]['strokes'] for d in range(first, day + 1)),
                       mine[day]) for mine in players.values()
                      if all(d in mine for d in range(first, day + 1))]
@@ -290,9 +290,9 @@ def _agg(rs):
 
 def decides(r):
     """Whether a tournament round's place decides its event: every one-day
-    event's does, a four-day event's only on its last day."""
+    event's does, a multi-day event's only on its last day."""
     return (r.get('series') is None
-            or r['day'] == r['series'] + twtourney.SERIES_DAYS - 1)
+            or r['day'] == r['series'] + twtourney.series_days(r['series']) - 1)
 
 
 def tourney_wins(rs, open_day=None):
@@ -791,6 +791,7 @@ def news(db, now=None, today=None):
         board = [r for r in rs if counts(r) and r['day'] == today
                  and r['strokes'] is not None]
         if event.get('series'):
+            lines.append('One round a day: your first start counts.')
             lines.append(_standing(db, today, 'Leader:'))
         elif board:
             lead = min(board, key=lambda r: (r['strokes'], r['when']))
@@ -805,7 +806,7 @@ def news(db, now=None, today=None):
             and r['strokes'] is not None]
     before = db.event(today - 1)
     if before and before.get('series'):
-        # A four-day event: its running leader, or its winner on the last day.
+        # A multi-day event: its running leader, or its winner on the last day.
         if db.tourney_board(today - 1, limit=1):
             sections.append(['YESTERDAY: %s' % before['name'], _standing(
                 db, today - 1, 'Won by' if twtourney.series_last(before)

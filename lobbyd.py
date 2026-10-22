@@ -381,8 +381,9 @@ def ensure_season():
         log('***', 'tournament calendar generated for %s' % ', '.join(made))
         note('calendar', 'the tournament calendar was drawn up for %s'
              % ', '.join(made))
-    schedule_majors()
     repair_calendar()
+    schedule_majors()
+    schedule_weekends()
     reprice_calendar()
     return made
 
@@ -408,6 +409,32 @@ def schedule_majors():
                twstats.course_name(event['course'])))
     if placed:
         note('calendar', '%d four-day event%s added to the calendar'
+             % (len(placed), '' if len(placed) == 1 else 's'))
+    return placed
+
+
+def schedule_weekends():
+    """Make every weekend outside a major a three-round event on a calendar
+    drawn before they existed, from the Friday already stored there -- after
+    repair_calendar, so the weekend is on a course that can be played.  The
+    same rule as schedule_majors: whole or not at all, only where it has not
+    started and nobody has played any of it (twdb.place_series)."""
+    today = twtourney.today()
+    row = DB.one('SELECT MAX(day) AS last FROM events')
+    if not row or row['last'] is None:
+        return []
+    rounds = []
+    for day in range(today, row['last'] - 1):
+        friday = DB.event(day)
+        if (friday and twtourney.weekend_first(day) == day
+                and not friday.get('series')):
+            rounds += twtourney.weekend_rounds(friday)
+    placed = DB.place_series(rounds, today)
+    if placed:
+        log('***', 'scheduled %d weekend event%s from %s'
+            % (len(placed), '' if len(placed) == 1 else 's',
+               twtourney.from_day(placed[0])))
+        note('calendar', '%d three-round weekend event%s added to the calendar'
              % (len(placed), '' if len(placed) == 1 else 's'))
     return placed
 
@@ -1639,6 +1666,16 @@ class Handler(socketserver.BaseRequestHandler):
                 % twtourney.from_day(day))
             return self.send('cusr', ident, {'~~': 'OK', 'CMD': 'esr2t',
                                              'TKEY': bytes(16), 'DATA': ''})
+        # A multi-day event is one round a day: the first one started.  The
+        # refusal is the same empty list, so the console says the server is
+        # unavailable; the receipt of the first round and the news say why.
+        event = DB.event(day)
+        if event and event.get('series') and who and \
+                not DB.start_round(who, day):
+            log('!!!', '    esr2t: %s already started %s today, refusing'
+                % (who, event['name']))
+            return self.send('cusr', ident, {'~~': 'OK', 'CMD': 'esr2t',
+                                             'TKEY': bytes(16), 'DATA': ''})
         name, data = self.tourney_entry(day)
         key = secrets.token_bytes(16)
         self.TOURNEY_KEYS[who] = (day, key)
@@ -1741,11 +1778,25 @@ class Handler(socketserver.BaseRequestHandler):
         # without this, a player could enter today's event and have the result
         # recorded against any date they liked.
         event = DB.event(issued_day)
+        series = event.get('series') if event else None
+        if series and not (fields.get('DONE') == 1 and not fields.get('QUIT')
+                           and fields.get('HOLES') == 18):
+            # The day's one round of a multi-day event, not finished: that day
+            # is missed, and with it the event.
+            log('***', '    %s did not finish round %d of %s (%d holes)'
+                % (who, issued_day - series + 1, event['name'],
+                   fields.get('HOLES', 0)))
+            return self.send('cusr', ident, raw=(
+                b'Round %d was not completed, so you are out of this event. '
+                b"Each day's first round is the only one that counts."
+                % (issued_day - series + 1)))
         # Only a player's lowest round of the day counts; a worse replay is
-        # acknowledged but leaves the standing score alone.
+        # acknowledged but leaves the standing score alone.  A multi-day event
+        # keeps its first round instead.
         best = DB.add_tourney(who, issued_day,
                               event['course'] if event else course, fields,
-                              event=event['name'] if event else '')
+                              event=event['name'] if event else '',
+                              first_only=bool(series))
         kept = (' (best of the day %d stands)' % best
                 if best != fields['STROKES'] else '')
         place, entrants = DB.tourney_place(who, issued_day)
@@ -1763,13 +1814,16 @@ class Handler(socketserver.BaseRequestHandler):
                        'the day it started'
                 % (who, twtourney.from_day(issued_day),
                    twtourney.from_day(day)))
-        if event and event.get('series'):
-            # A round of a four-day event: where it leaves the 72-hole total.
-            rnd = issued_day - event['series'] + 1
-            message = 'Round %d of %d: %d is recorded%s.' % (
-                rnd, twtourney.SERIES_DAYS, fields['STROKES'],
-                '' if best == fields['STROKES'] else ', your best of %d counts'
-                % best)
+        if series:
+            # A round of a multi-day event: where it leaves the running total.
+            rnd = issued_day - series + 1
+            days = twtourney.series_days(series)
+            message = 'Round %d of %d: %d is recorded%s.%s' % (
+                rnd, days, fields['STROKES'],
+                '' if best == fields['STROKES']
+                else ', but your first round of %d counts' % best,
+                " That is your round for today; the next opens tomorrow."
+                if rnd < days else '')
             row = next((r for r in DB.tourney_board(issued_day, limit=1000)
                         if r['name'] == who), None)
             if row is None:
