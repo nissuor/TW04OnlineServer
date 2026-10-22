@@ -13,7 +13,9 @@ It brings back the game's whole online menu:
 
 - **Lobby:** accounts and personas, game rooms, chat, and challenges.
 - **Head-to-head play:** match play and stroke play, with results recorded.
-- **Online tournaments:** a daily event with its own leaderboards.
+- **Online tournaments:** a daily event with its own leaderboards, and
+  four-day majors -- the game's own Southern, PGA TOUR, US and UK Major
+  Championships and THE PLAYERS -- scored on the 72-hole total.
 - **Leaderboards and stats:** your rank and statistics on the in-game screens.
 - **EA Messenger:** buddy lists, blocking, who's online, and messages between players.
 - **In-game news:** your own text, plus a digest the server writes from recent results.
@@ -440,6 +442,7 @@ python3 tests/lobbyd_buddytest.py     # EA Messenger
 python3 tests/lobbyd_reporttest.py    # abuse reports and their private page
 python3 tests/twdb_statstest.py       # scoring real captured rounds
 python3 tests/twdb_tourneytest.py     # ties, open days, and every match counted
+python3 tests/twdb_majorstest.py      # four-day majors: running totals, paid once
 python3 tests/webui_pagestest.py      # player, stats, records and course pages; the news
 python3 tests/webui_featurestest.py   # event, h2h, compare, Hall of Fame and admin pages; handicaps
 ```

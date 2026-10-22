@@ -381,9 +381,35 @@ def ensure_season():
         log('***', 'tournament calendar generated for %s' % ', '.join(made))
         note('calendar', 'the tournament calendar was drawn up for %s'
              % ', '.join(made))
+    schedule_majors()
     repair_calendar()
     reprice_calendar()
     return made
+
+
+def schedule_majors():
+    """Give a calendar drawn before the four-day events existed its majors.
+
+    generate_month puts them on every month it draws from now on; this is for
+    the months already stored.  An event is placed whole or not at all, and
+    only where it has not started and nobody has played a single round of it
+    (twdb.place_series) -- the same rule as repair_calendar and
+    reprice_calendar, so nothing anybody played is rewritten."""
+    today = twtourney.today()
+    row = DB.one('SELECT MAX(day) AS last FROM events')
+    if not row or row['last'] is None:
+        return []
+    placed = DB.place_series(twtourney.majors_between(today, row['last']),
+                             today)
+    for first in placed:
+        event = DB.event(first)
+        log('***', 'scheduled %s from %s at %s'
+            % (event['name'].rsplit(' R', 1)[0], twtourney.from_day(first),
+               twstats.course_name(event['course'])))
+    if placed:
+        note('calendar', '%d four-day event%s added to the calendar'
+             % (len(placed), '' if len(placed) == 1 else 's'))
+    return placed
 
 
 def repair_calendar():
@@ -425,6 +451,10 @@ def reprice_calendar():
     today = twtourney.today()
 
     def plan(event):
+        # A four-day event's purse and conditions are its own, not the
+        # course's: they stay as twtourney.MAJORS set them.
+        if event.get('series'):
+            return event['conditions'], event['purse']
         conditions = event['conditions']
         if not conditions and event['day'] > today:
             conditions = twtourney.event_conditions(event['day'],
@@ -1633,14 +1663,16 @@ class Handler(socketserver.BaseRequestHandler):
         me = self.persona or ''
         out = []
         for day in range(start, start + count):
-            board = DB.tourney_day(day, limit=1000)
+            # A four-day event's place is on the running total, but the two
+            # scores are bytes, so they are that day's rounds.
+            board = DB.tourney_board(day, limit=1000)
             mine = next((row for row in board if row['name'] == me), None)
             if not mine:
                 continue
             out.append(twtourney.make_result(
                 board[0]['name'], day,
-                winner_score=board[0]['strokes'],
-                your_score=mine['strokes'],
+                winner_score=board[0]['today'],
+                your_score=mine['today'],
                 place=mine['place']))
         return out
 
@@ -1731,7 +1763,23 @@ class Handler(socketserver.BaseRequestHandler):
                        'the day it started'
                 % (who, twtourney.from_day(issued_day),
                    twtourney.from_day(day)))
-        if best != fields['STROKES']:
+        if event and event.get('series'):
+            # A round of a four-day event: where it leaves the 72-hole total.
+            rnd = issued_day - event['series'] + 1
+            message = 'Round %d of %d: %d is recorded%s.' % (
+                rnd, twtourney.SERIES_DAYS, fields['STROKES'],
+                '' if best == fields['STROKES'] else ', your best of %d counts'
+                % best)
+            row = next((r for r in DB.tourney_board(issued_day, limit=1000)
+                        if r['name'] == who), None)
+            if row is None:
+                message += '%sA missed round keeps you off the leaderboard.' % (
+                    chr(10))
+            else:
+                message += '%sTotal %d (%s). You are %s of %d.' % (
+                    chr(10), row['strokes'], twtourney.row_to_par(row),
+                    _ordinal(place), entrants)
+        elif best != fields['STROKES']:
             message = ('Your round of %d is recorded, but your best of %d '
                        'still counts.%sYou are %s of %d.' % (
                            fields['STROKES'], best, chr(10), _ordinal(place),
@@ -2006,13 +2054,15 @@ class Handler(socketserver.BaseRequestHandler):
         out = []
         for day in range(twtourney.today() - self.SEASON_DAYS,
                          twtourney.today()):
-            for row in DB.tourney_day(day, limit=1000):
+            event = DB.event(day)
+            if event and twtourney.series_last(event) != day:
+                continue           # a four-day event is won on its last day
+            for row in DB.tourney_board(day, limit=1000):
                 if row['place'] != 1:
                     break
                 out.append({'name': row['name'], 'day': day,
                             'strokes': row['strokes'],
-                            'text': twtourney.to_par(row['fields'],
-                                                     row['par'])})
+                            'text': twtourney.row_to_par(row)})
         out.reverse()
         return out
 
@@ -2047,7 +2097,8 @@ class Handler(socketserver.BaseRequestHandler):
 
         if self.DAILY_BASE <= index <= self.DAILY_BASE + span:
             day = first + (index - self.DAILY_BASE)
-            rows = DB.tourney_day(day)
+            # On a four-day event this is the running total (tourney_board).
+            rows = DB.tourney_board(day)
             for row in rows:
                 # The daily board has RANK, PLAYER NAME and ONE free column,
                 # and no numeric column of its own -- so the result has to go
@@ -2058,11 +2109,12 @@ class Handler(socketserver.BaseRequestHandler):
                 # board.  Scoring each card against a par worked out from
                 # itself put 78 (+3) above 77 (+4) on a leaderboard that was
                 # correctly sorted by strokes -- see twtourney.card_par.
-                row['text'] = twtourney.to_par(row['fields'], row['par'])
+                row['text'] = twtourney.row_to_par(row)
                 # And the sort key has to run the other way from the score:
                 # in stroke play the lowest round wins, but the client puts the
                 # largest `P` on top.  Not drawn anywhere -- purely the order.
-                row['p'] = max(0, twtourney.SORT_BASE - row['strokes'])
+                row['p'] = max(0, twtourney.SORT_BASE * row['rounds']
+                               - row['strokes'])
             # Tied scores share a rank, as on the web site.
             return ('daily, %s' % twtourney.from_day(day),
                     [(row['place'], row) for row in rows])
